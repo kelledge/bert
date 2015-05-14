@@ -54,6 +54,9 @@ class SerialBroadcast(threading.Thread):
     while True:
       self.frame = (yield)
       
+  def resetUnframer(self):
+    self.unframer = framing.UnFramer(target=self.on_frame)
+    
   def run(self):
     frame_size = 32
     while True:
@@ -68,7 +71,9 @@ class SerialBroadcast(threading.Thread):
         if self.serial_port.inWaiting() > 0:
           self.unframer.send(self.serial_port.read(size=1))
         if (time.time() - read_start) > 1.1:
-          
+          #Reset Unframer to discart any partial frames that may be lingering
+          self.resetUnframer()
+          #Break out of loop by setting frame to False which is not None
           self.frame = False
           
       if self.frame is False:
@@ -87,9 +92,13 @@ class SerialTest(object):
     
     self.serial_number = serial_number
     self.serial_type = serial_type
-    self.loop_back = SerialLoopBack('/dev/serial/by-id/' + self.serial_number + '/' + self.serial_type + 'r')
-    self.broadcast = SerialBroadcast('/dev/serial/by-id/' + self.serial_number + '/' + self.serial_type + 'l', self.serial_type)
-    
+    if self.serial_type is not 'FTDI':
+      self.loop_back = SerialLoopBack('/dev/serial/by-id/' + self.serial_number + '/' + self.serial_type + 'r')
+      self.broadcast = SerialBroadcast('/dev/serial/by-id/' + self.serial_number + '/' + self.serial_type + 'l', self.serial_type)
+    else:
+      self.loop_back = SerialLoopBack('/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A703X3A3-if00-port0')
+      self.broadcast = SerialBroadcast('/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A90BJ1LX-if00-port0', self.serial_type)
+      
   def start_test(self):
     self.loop_back.start()
     self.broadcast.start()
