@@ -11,39 +11,16 @@ logger.setLevel('INFO')  # INFO, DEBUG, etc
 handler = logging.handlers.SysLogHandler(address='/dev/log')
 
 
-class SerialLoopBack(threading.Thread):
-    def __init__(self, serial_name):
+class SerialThread(threading.Thread):
+    def __init__(self, serial_path, test_name, thread_type):
         self.frame = None
         self.on_frame = self.onFrame()
         self.unframer = framing.UnFramer(target=self.on_frame)
-        self.serial_port = serial.Serial(serial_name)
-        threading.Thread.__init__(self)
-        return
-
-    @utils.coroutine
-    def onFrame(self):
-        while True:
-            self.frame = (yield)
-
-    def run(self):
-        while True:
-            if self.serial_port.inWaiting() > 0:
-                self.unframer.send(self.serial_port.read(size=1))
-
-            if self.frame is not None:
-                time.sleep(0.1)
-                self.serial_port.write(self.frame.raw)
-                self.frame = None
-
-
-class SerialBroadcast(threading.Thread):
-    def __init__(self, serial_name, test_name):
-        self.frame = None
-        self.on_frame = self.onFrame()
-        self.unframer = framing.UnFramer(target=self.on_frame)
-        self.serial_port = serial.Serial(serial_name)
+        self.serial_port = serial.Serial(serial_path)
         self.urandom = open('/dev/urandom', 'rb')
         self.test_name = test_name
+        self.thread_type = thread_type
+        self.stop_event = threading.Event()
         threading.Thread.__init__(self)
         return
 
@@ -55,9 +32,9 @@ class SerialBroadcast(threading.Thread):
     def resetUnframer(self):
         self.unframer = framing.UnFramer(target=self.on_frame)
 
-    def run(self):
+    def broadcast(self):
         frame_size = 32
-        while True:
+        while(not self.stop_event.is_set()):
             framer = framing.Framer(self.urandom.read(frame_size))
             logger.debug('test="' + self.test_name + '" Made my frame')
             for frame_bytes in framer:
@@ -87,10 +64,30 @@ class SerialBroadcast(threading.Thread):
                 logger.info('test="' + self.test_name +
                             '" result="fail" reason="invalid checksum"')
             time.sleep(59)
+        return
+
+    def loop(self):
+        while(not self.stop_event.is_set()):
+            if self.serial_port.inWaiting() > 0:
+                self.unframer.send(self.serial_port.read(size=1))
+
+            if self.frame is not None:
+                time.sleep(0.1)
+                self.serial_port.write(self.frame.raw)
+                self.frame = None
+
+    def run(self):
+        if self.thread_type is 'loop':
+            self.loop()
+        elif self.thread_type is 'broadcast':
+            self.broadcast()
+
+    def stop(self):
+        self.stop_event.set()
 
 
 class SerialTest(object):
-    def __init__(self, serial_number, serial_type):
+    def __init__(self, serial_number, serial_type, broadcast_path, loop_path):
         # These two lines set up the logger for syslog
         # They should be moved to whatever the managing class ends up being
         handler.setFormatter(logging.Formatter(fmt=(serial_number +
@@ -99,19 +96,19 @@ class SerialTest(object):
 
         self.serial_number = serial_number
         self.serial_type = serial_type
-        if self.serial_type is not 'FTDI':
-            self.loop_back = SerialLoopBack('/dev/serial/by-id/' +
-                                            self.serial_number + '/' +
-                                            self.serial_type + 'r')
-            self.broadcast = SerialBroadcast('/dev/serial/by-id/' +
-                                             self.serial_number +
-                                             '/' + self.serial_type +
-                                             'l', self.serial_type)
-        else:
-            self.loop_back = SerialLoopBack('/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A703X3A3-if00-port0')
-            self.broadcast = SerialBroadcast('/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A90BJ1LX-if00-port0', self.serial_type)
+        self.broadcast_path = broadcast_path
+        self.loop_path = loop_path
+        self.loop_back = SerialThread(self.loop_path,
+                                      self.serial_type, 'loop')
+        self.broadcast = SerialThread(self.broadcast_path,
+                                      self.serial_type, 'broadcast')
 
     def start_test(self):
         self.loop_back.start()
         self.broadcast.start()
         logger.info('test="' + self.serial_type + '" starting test')
+
+    def stop_test(self):
+        self.loop_back.stop()
+        self.broadcast.stop()
+        logger.info('test="' + self.serial_type + '" stopping test')
